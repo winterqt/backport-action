@@ -1,5 +1,16 @@
+import * as core from "@actions/core";
 import * as child from "child_process";
+import { mocked } from "ts-jest/utils";
 import { promisify } from "util";
+
+import * as backport from "../src/backport";
+import * as github from "../src/github";
+import * as golden from "../src/test/constants";
+
+jest.mock("@actions/core");
+jest.mock("../src/github");
+const mockedCore = mocked(core, true);
+const mockedGithub = mocked(github, true);
 
 const execPromised = promisify(child.exec);
 async function exec({
@@ -50,18 +61,26 @@ describe("given a git repository with a merged pr", () => {
     });
 
     test("then it cherry-picked all commits from the PR to backport-b-to-1", async () => {
-      const prLog = await exec({
-        command: 'git log feature-b --oneline | grep -v "init: add README.md"',
-        options: { cwd: "test/repo" },
-      });
-      const backportLog = await exec({
-        command: 'git log backport-b-to-1 | grep "cherry picked from"',
-        options: { cwd: "test/repo" },
-      });
-      prLog.stdout
-        .split("\n")
-        .map((commit) => commit.split(" ")[0])
-        .forEach((sha) => expect(backportLog.stdout).toContain(sha));
+      assertCommitsCherryPicked('feature-b', 'backport-b-to-1');
+    });
+  });
+
+  describe("when github runs the action", () => {
+    beforeEach(async () => {
+      const token = "EB6B2C67-6298-4857-9792-280F293CAAE0";
+      const pwd = "./test/project";
+      const version = "0.0.2";
+      mockedCore.getInput
+        .mockReturnValueOnce(token)
+        .mockReturnValueOnce(pwd)
+        .mockReturnValueOnce(version);
+      mockedGithub.getRepo.mockReturnValue(golden.repo);
+      mockedGithub.getPayload.mockReturnValueOnce(golden.payloads.with_backport_label);
+    });
+
+    test.only("then it cherry-picked all commits from the PR to backport-b-to-1", async () => {
+      await backport.run();
+      await assertCommitsCherryPicked('feature-b', 'backport-b-to-1');
     });
   });
 
@@ -69,6 +88,21 @@ describe("given a git repository with a merged pr", () => {
     await exec({ command: "./cleanup.sh" });
   });
 });
+
+async function assertCommitsCherryPicked(from: string, to: string) {
+  const fromLog = await exec({
+    command: `git log ${from} --oneline | grep -v "init: add README.md"`,
+    options: { cwd: "test/repo" },
+  });
+  const toLog = await exec({
+    command: `git log ${to} | grep "cherry picked from"`,
+    options: { cwd: "test/repo" },
+  });
+  fromLog.stdout
+    .split("\n")
+    .map((commit) => commit.split(" ")[0])
+    .forEach((sha) => expect(toLog.stdout).toContain(sha));
+}
 
 type Command = {
   command: string;
