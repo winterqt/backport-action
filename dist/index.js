@@ -25,15 +25,6 @@ var __importStar = (this && this.__importStar) || function (mod) {
     __setModuleDefault(result, mod);
     return result;
 };
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -47,140 +38,137 @@ class Backport {
         this.github = github;
         this.config = config;
     }
-    run() {
-        var _a, _b, _c, _d;
-        return __awaiter(this, void 0, void 0, function* () {
-            try {
-                const payload = this.github.getPayload();
-                const owner = this.github.getRepo().owner;
-                const repo = (_b = (_a = payload.repository) === null || _a === void 0 ? void 0 : _a.name) !== null && _b !== void 0 ? _b : this.github.getRepo().repo;
-                const pull_number = this.github.getPullNumber();
-                const mainpr = yield this.github.getPullRequest(pull_number);
-                if (!(yield this.github.isMerged(mainpr))) {
-                    const message = "Only merged pull requests can be backported.";
-                    this.github.createComment({
-                        owner,
-                        repo,
-                        issue_number: pull_number,
-                        body: message,
-                    });
-                    return;
+    async run() {
+        try {
+            const payload = this.github.getPayload();
+            const owner = this.github.getRepo().owner;
+            const repo = payload.repository?.name ?? this.github.getRepo().repo;
+            const pull_number = this.github.getPullNumber();
+            const mainpr = await this.github.getPullRequest(pull_number);
+            if (!(await this.github.isMerged(mainpr))) {
+                const message = "Only merged pull requests can be backported.";
+                this.github.createComment({
+                    owner,
+                    repo,
+                    issue_number: pull_number,
+                    body: message,
+                });
+                return;
+            }
+            const headref = mainpr.head.sha;
+            const baseref = mainpr.base.sha;
+            const labels = mainpr.labels;
+            const reviewers = mainpr.requested_reviewers?.map((r) => r.login) ?? [];
+            console.log(`Detected labels on PR: ${labels.map((label) => label.name)}`);
+            for (const label of labels) {
+                console.log(`Working on label ${label.name}`);
+                // we are looking for labels like "backport stable/0.24"
+                const match = this.config.labels.pattern.exec(label.name);
+                if (!match) {
+                    console.log("Doesn't match expected prefix");
+                    continue;
                 }
-                const headref = mainpr.head.sha;
-                const baseref = mainpr.base.sha;
-                const labels = mainpr.labels;
-                const reviewers = (_d = (_c = mainpr.requested_reviewers) === null || _c === void 0 ? void 0 : _c.map((r) => r.login)) !== null && _d !== void 0 ? _d : [];
-                console.log(`Detected labels on PR: ${labels.map((label) => label.name)}`);
-                for (const label of labels) {
-                    console.log(`Working on label ${label.name}`);
-                    // we are looking for labels like "backport stable/0.24"
-                    const match = this.config.labels.pattern.exec(label.name);
-                    if (!match) {
-                        console.log("Doesn't match expected prefix");
-                        continue;
-                    }
-                    if (match.length < 2) {
-                        console.error(dedent_1.default `\`label_pattern\` '${this.config.labels.pattern.source}' \
+                if (match.length < 2) {
+                    console.error(dedent_1.default `\`label_pattern\` '${this.config.labels.pattern.source}' \
             matched "${label.name}", but did not capture any branchname. \
             Please make sure to provide a regex with a capture group as \
             \`label_pattern\`.`);
-                        continue;
-                    }
-                    //extract the target branch (e.g. "stable/0.24")
-                    const target = match[1];
-                    console.log(`Found target in label: ${target}`);
-                    try {
-                        const branchname = `backport-${pull_number}-to-${target}`;
-                        console.log(`Start backport to ${branchname}`);
-                        const scriptExitCode = yield exec.callBackportScript(this.config.pwd, headref, baseref, target, branchname, this.config.version);
-                        if (scriptExitCode != 0) {
-                            const message = this.composeMessageForBackportScriptFailure(target, scriptExitCode, baseref, headref, branchname);
-                            console.error(`exitcode(${scriptExitCode}): ${message}`);
-                            yield this.github.createComment({
-                                owner,
-                                repo,
-                                issue_number: pull_number,
-                                body: message,
-                            });
-                            continue;
-                        }
-                        console.info(`Push branch to origin`);
-                        const pushExitCode = yield exec.call(`git push --set-upstream origin ${branchname}`);
-                        if (pushExitCode != 0) {
-                            const message = this.composeMessageForGitPushFailure(target, pushExitCode);
-                            console.error(message);
-                            yield this.github.createComment({
-                                owner,
-                                repo,
-                                issue_number: pull_number,
-                                body: message,
-                            });
-                            continue;
-                        }
-                        console.info(`Create PR for ${branchname}`);
-                        const { title, body } = this.composePRContent(target, mainpr.title, pull_number);
-                        const new_pr_response = yield this.github.createPR({
-                            owner,
-                            repo,
-                            title,
-                            body,
-                            head: branchname,
-                            base: target,
-                            maintainer_can_modify: true,
-                        });
-                        if (new_pr_response.status != 201) {
-                            console.error(JSON.stringify(new_pr_response));
-                            const message = this.composeMessageForCreatePRFailed(new_pr_response);
-                            yield this.github.createComment({
-                                owner,
-                                repo,
-                                issue_number: pull_number,
-                                body: message,
-                            });
-                            continue;
-                        }
-                        const new_pr = new_pr_response.data;
-                        const review_response = yield this.github.requestReviewers({
-                            owner,
-                            repo,
-                            pull_number: new_pr.number,
-                            reviewers,
-                        });
-                        if (review_response.status != 201) {
-                            console.error(JSON.stringify(review_response));
-                            const message = this.composeMessageForRequestReviewersFailed(review_response, target);
-                            yield this.github.createComment({
-                                owner,
-                                repo,
-                                issue_number: pull_number,
-                                body: message,
-                            });
-                            continue;
-                        }
-                        const message = this.composeMessageForSuccess(new_pr.number, target);
-                        yield this.github.createComment({
+                    continue;
+                }
+                //extract the target branch (e.g. "stable/0.24")
+                const target = match[1];
+                console.log(`Found target in label: ${target}`);
+                try {
+                    const branchname = `backport-${pull_number}-to-${target}`;
+                    console.log(`Start backport to ${branchname}`);
+                    const scriptExitCode = await exec.callBackportScript(this.config.pwd, headref, baseref, target, branchname, this.config.version);
+                    if (scriptExitCode != 0) {
+                        const message = this.composeMessageForBackportScriptFailure(target, scriptExitCode, baseref, headref, branchname);
+                        console.error(`exitcode(${scriptExitCode}): ${message}`);
+                        await this.github.createComment({
                             owner,
                             repo,
                             issue_number: pull_number,
                             body: message,
                         });
+                        continue;
                     }
-                    catch (error) {
-                        console.error(error.message);
-                        yield this.github.createComment({
+                    console.info(`Push branch to origin`);
+                    const pushExitCode = await exec.call(`git push --set-upstream origin ${branchname}`);
+                    if (pushExitCode != 0) {
+                        const message = this.composeMessageForGitPushFailure(target, pushExitCode);
+                        console.error(message);
+                        await this.github.createComment({
                             owner,
                             repo,
                             issue_number: pull_number,
-                            body: error.message,
+                            body: message,
                         });
+                        continue;
                     }
+                    console.info(`Create PR for ${branchname}`);
+                    const { title, body } = this.composePRContent(target, mainpr.title, pull_number);
+                    const new_pr_response = await this.github.createPR({
+                        owner,
+                        repo,
+                        title,
+                        body,
+                        head: branchname,
+                        base: target,
+                        maintainer_can_modify: true,
+                    });
+                    if (new_pr_response.status != 201) {
+                        console.error(JSON.stringify(new_pr_response));
+                        const message = this.composeMessageForCreatePRFailed(new_pr_response);
+                        await this.github.createComment({
+                            owner,
+                            repo,
+                            issue_number: pull_number,
+                            body: message,
+                        });
+                        continue;
+                    }
+                    const new_pr = new_pr_response.data;
+                    const review_response = await this.github.requestReviewers({
+                        owner,
+                        repo,
+                        pull_number: new_pr.number,
+                        reviewers,
+                    });
+                    if (review_response.status != 201) {
+                        console.error(JSON.stringify(review_response));
+                        const message = this.composeMessageForRequestReviewersFailed(review_response, target);
+                        await this.github.createComment({
+                            owner,
+                            repo,
+                            issue_number: pull_number,
+                            body: message,
+                        });
+                        continue;
+                    }
+                    const message = this.composeMessageForSuccess(new_pr.number, target);
+                    await this.github.createComment({
+                        owner,
+                        repo,
+                        issue_number: pull_number,
+                        body: message,
+                    });
+                }
+                catch (error) {
+                    console.error(error.message);
+                    await this.github.createComment({
+                        owner,
+                        repo,
+                        issue_number: pull_number,
+                        body: error.message,
+                    });
                 }
             }
-            catch (error) {
-                console.error(error.message);
-                core.setFailed(error.message);
-            }
-        });
+        }
+        catch (error) {
+            console.error(error.message);
+            core.setFailed(error.message);
+        }
     }
     composePRContent(target, issue_title, issue_number) {
         const title = `[Backport ${target}] ${issue_title}`;
@@ -190,7 +178,6 @@ class Backport {
         return { title, body };
     }
     composeMessageForBackportScriptFailure(target, exitcode, baseref, headref, branchname) {
-        var _a;
         const reasons = {
             1: "due to an unknown script error",
             2: "because it was unable to create/access the git worktree directory",
@@ -199,7 +186,7 @@ class Backport {
             5: "because 1 or more of the commits are not available",
             6: "because 1 or more of the commits are not available",
         };
-        const reason = (_a = reasons[exitcode]) !== null && _a !== void 0 ? _a : "due to an unknown script error";
+        const reason = reasons[exitcode] ?? "due to an unknown script error";
         const suggestion = exitcode <= 4
             ? dedent_1.default `\`\`\`bash
                 git fetch origin ${target}
@@ -242,37 +229,24 @@ exports.Backport = Backport;
 /***/ }),
 
 /***/ 7757:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.call = exports.callBackportScript = void 0;
 const exec_1 = __nccwpck_require__(1514);
-function callBackportScript(pwd, headref, baseref, target, branchname, version) {
-    return __awaiter(this, void 0, void 0, function* () {
-        return exec_1.exec(`/home/runner/work/_actions/zeebe-io/backport-action/${version}/backport.sh`, [pwd, headref, baseref, target, branchname], {
-            listeners: {
-                stdout: (data) => console.log(data.toString()),
-            },
-            ignoreReturnCode: true,
-        });
+async function callBackportScript(pwd, headref, baseref, target, branchname, version) {
+    return exec_1.exec(`/home/runner/work/_actions/zeebe-io/backport-action/${version}/backport.sh`, [pwd, headref, baseref, target, branchname], {
+        listeners: {
+            stdout: (data) => console.log(data.toString()),
+        },
+        ignoreReturnCode: true,
     });
 }
 exports.callBackportScript = callBackportScript;
-function call(command) {
-    return __awaiter(this, void 0, void 0, function* () {
-        return exec_1.exec(command);
-    });
+async function call(command) {
+    return exec_1.exec(command);
 }
 exports.call = call;
 
@@ -311,15 +285,6 @@ var __importStar = (this && this.__importStar) || function (mod) {
     __setModuleDefault(result, mod);
     return result;
 };
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
 var __classPrivateFieldSet = (this && this.__classPrivateFieldSet) || function (receiver, state, value, kind, f) {
     if (kind === "m") throw new TypeError("Private method is not writable");
     if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a setter");
@@ -356,45 +321,38 @@ class Github {
         // the number can be taken from the issue
         return __classPrivateFieldGet(this, _Github_context, "f").issue.number;
     }
-    createComment(comment) {
-        return __awaiter(this, void 0, void 0, function* () {
-            console.log(`Create comment: ${comment.body}`);
-            return __classPrivateFieldGet(this, _Github_octokit, "f").rest.issues.createComment(comment);
+    async createComment(comment) {
+        console.log(`Create comment: ${comment.body}`);
+        return __classPrivateFieldGet(this, _Github_octokit, "f").rest.issues.createComment(comment);
+    }
+    async getPullRequest(pull_number) {
+        console.log(`Retrieve pull request data for #${pull_number}`);
+        return __classPrivateFieldGet(this, _Github_octokit, "f").rest.pulls
+            .get({
+            ...this.getRepo(),
+            pull_number,
+        })
+            .then((response) => response.data);
+    }
+    async isMerged(pull) {
+        console.log(`Check whether pull request ${pull.number} is merged`);
+        return __classPrivateFieldGet(this, _Github_octokit, "f").rest.pulls
+            .checkIfMerged({ ...this.getRepo(), pull_number: pull.number })
+            .then(() => true /* status is always 204 */)
+            .catch((error) => {
+            if (error?.status == 404)
+                return false;
+            else
+                throw error;
         });
     }
-    getPullRequest(pull_number) {
-        return __awaiter(this, void 0, void 0, function* () {
-            console.log(`Retrieve pull request data for #${pull_number}`);
-            return __classPrivateFieldGet(this, _Github_octokit, "f").rest.pulls
-                .get(Object.assign(Object.assign({}, this.getRepo()), { pull_number }))
-                .then((response) => response.data);
-        });
+    async createPR(pr) {
+        console.log(`Create PR: ${pr.body}`);
+        return __classPrivateFieldGet(this, _Github_octokit, "f").rest.pulls.create(pr);
     }
-    isMerged(pull) {
-        return __awaiter(this, void 0, void 0, function* () {
-            console.log(`Check whether pull request ${pull.number} is merged`);
-            return __classPrivateFieldGet(this, _Github_octokit, "f").rest.pulls
-                .checkIfMerged(Object.assign(Object.assign({}, this.getRepo()), { pull_number: pull.number }))
-                .then(() => true /* status is always 204 */)
-                .catch((error) => {
-                if ((error === null || error === void 0 ? void 0 : error.status) == 404)
-                    return false;
-                else
-                    throw error;
-            });
-        });
-    }
-    createPR(pr) {
-        return __awaiter(this, void 0, void 0, function* () {
-            console.log(`Create PR: ${pr.body}`);
-            return __classPrivateFieldGet(this, _Github_octokit, "f").rest.pulls.create(pr);
-        });
-    }
-    requestReviewers(request) {
-        return __awaiter(this, void 0, void 0, function* () {
-            console.log(`Request reviewers: ${request.reviewers}`);
-            return __classPrivateFieldGet(this, _Github_octokit, "f").rest.pulls.requestReviewers(request);
-        });
+    async requestReviewers(request) {
+        console.log(`Request reviewers: ${request.reviewers}`);
+        return __classPrivateFieldGet(this, _Github_octokit, "f").rest.pulls.requestReviewers(request);
     }
 }
 exports.Github = Github;
@@ -427,15 +385,6 @@ var __importStar = (this && this.__importStar) || function (mod) {
     __setModuleDefault(result, mod);
     return result;
 };
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(2186));
 const backport_1 = __nccwpck_require__(5859);
@@ -445,22 +394,20 @@ const github_1 = __nccwpck_require__(5928);
  *
  * Is separated from backport for testing purposes
  */
-function run() {
-    return __awaiter(this, void 0, void 0, function* () {
-        const token = core.getInput("github_token", { required: true });
-        const pwd = core.getInput("github_workspace", { required: true });
-        const version = core.getInput("version", { required: true });
-        const pattern = new RegExp(core.getInput("label_pattern"));
-        const description = core.getInput("pull_description");
-        const github = new github_1.Github(token);
-        const backport = new backport_1.Backport(github, {
-            version,
-            pwd,
-            labels: { pattern },
-            pull: { description },
-        });
-        return backport.run();
+async function run() {
+    const token = core.getInput("github_token", { required: true });
+    const pwd = core.getInput("github_workspace", { required: true });
+    const version = core.getInput("version", { required: true });
+    const pattern = new RegExp(core.getInput("label_pattern"));
+    const description = core.getInput("pull_description");
+    const github = new github_1.Github(token);
+    const backport = new backport_1.Backport(github, {
+        version,
+        pwd,
+        labels: { pattern },
+        pull: { description },
     });
+    return backport.run();
 }
 // this would be executed on import in a test file
 run();
