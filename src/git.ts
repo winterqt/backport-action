@@ -106,10 +106,10 @@ async function isCommit(ref: string, pwd: string) {
 }
 
 async function findCommonAncestor(ref1: string, ref2: string, pwd: string) {
-  const { exitCode, stdout } = await git("merge-base", [ref1, ref2], pwd);
+  const { exitCode, stdout, stderr } = await git("merge-base", [ref1, ref2], pwd);
   if (exitCode !== 0) {
     throw new Error(
-      `'git merge-base ${ref1} ${ref2}' failed with exit code ${exitCode}`
+      `'git merge-base ${ref1} ${ref2}' failed with exit code ${exitCode} (stdout: ${stdout}, stderr: ${stderr})`
     );
   }
   return stdout;
